@@ -72,9 +72,9 @@ class Ranker:
     """Thread-safe, TTL-cached provider of the ranked free-model list.
 
     One ``Ranker`` instance is shared by all request threads. Selections are
-    keyed by ``require_tools`` (the tool filter changes eligibility), so the
-    proxy can ask for a tools-capable list or a don't-care list independently,
-    each with its own TTL.
+    keyed by ``(require_tools, allow_trains)`` (each changes eligibility), so
+    the proxy can ask for a tools-capable list, a trains-tier-included list,
+    or any combination independently, each with its own TTL.
     """
 
     def __init__(self, ttl_seconds: int = 3600, denylist: dict[str, list[str]] | None = None, logger=None):
@@ -82,8 +82,8 @@ class Ranker:
         self.denylist = denylist or {"models": [], "providers": []}
         self.log = logger
         self._lock = threading.Lock()
-        # keyed by require_tools -> {"built": datetime, "rows": [...]}
-        self._selections: dict[bool, dict[str, Any]] = {}
+        # keyed by (require_tools, allow_trains) -> {"built": datetime, "rows": [...]}
+        self._selections: dict[tuple[bool, bool], dict[str, Any]] = {}
         self._privacy_cache = self._load_privacy_cache()
 
     # -- privacy cache (persisted) -----------------------------------------
@@ -134,7 +134,7 @@ class Ranker:
         return None
 
     # -- build -------------------------------------------------------------
-    def _build(self, require_tools: bool) -> list[dict[str, Any]]:
+    def _build(self, require_tools: bool, allow_trains: bool = False) -> list[dict[str, Any]]:
         api_models = openrouter.fetch_free_models()
         collection_order = openrouter.fetch_collection_order()
         result = selection.select_models(
@@ -151,6 +151,13 @@ class Ranker:
         rows: list[dict[str, Any]] = []
         for c in result.candidates:
             denied = self._denied(c)
+            selectable = bool(
+                c.tier in (openrouter.TIER_PRIVATE, openrouter.TIER_LOGS)
+                or (allow_trains and c.tier == openrouter.TIER_TRAINS)
+            ) and denied is None
+            reason = denied or c.reason
+            if selectable and c.tier == openrouter.TIER_TRAINS:
+                reason = "selected: trains tier (allowed via auto:any)"
             rows.append(
                 {
                     "id": c.id,
@@ -160,9 +167,8 @@ class Ranker:
                     "uptime_1d": c.uptime_1d,
                     "expires": c.expiration_date,
                     "endpoint_provider": c.endpoint_provider,
-                    "reason": denied or c.reason,
-                    "selectable": bool(c.tier in (openrouter.TIER_PRIVATE, openrouter.TIER_LOGS))
-                    and denied is None,
+                    "reason": reason,
+                    "selectable": selectable,
                     "denied": denied is not None,
                 }
             )
@@ -170,9 +176,12 @@ class Ranker:
         rows.sort(key=lambda r: (not r["selectable"], r["rank"] is None, r["rank"] or 1e9))
         return rows
 
-    def _get_rows(self, require_tools: bool, force: bool = False) -> list[dict[str, Any]]:
+    def _get_rows(
+        self, require_tools: bool, allow_trains: bool = False, force: bool = False
+    ) -> list[dict[str, Any]]:
+        key = (require_tools, allow_trains)
         with self._lock:
-            entry = self._selections.get(require_tools)
+            entry = self._selections.get(key)
             fresh = (
                 entry
                 and not force
@@ -183,24 +192,33 @@ class Ranker:
 
         # Rebuild outside the lock (network I/O); tolerate failure.
         try:
-            rows = self._build(require_tools)
+            rows = self._build(require_tools, allow_trains)
         except Exception as e:  # keep serving last good selection
             if self.log:
-                self.log.warning("ranker rebuild failed (require_tools=%s): %s", require_tools, e)
+                self.log.warning(
+                    "ranker rebuild failed (require_tools=%s, allow_trains=%s): %s",
+                    require_tools, allow_trains, e,
+                )
             with self._lock:
-                entry = self._selections.get(require_tools)
+                entry = self._selections.get(key)
             if entry:
                 return entry["rows"]
             raise
 
         with self._lock:
-            self._selections[require_tools] = {"built": _now(), "rows": rows}
+            self._selections[key] = {"built": _now(), "rows": rows}
         return rows
 
     # -- public API --------------------------------------------------------
-    def pick(self, require_tools: bool, require_private: bool, force: bool = False) -> list[str]:
+    def pick(
+        self,
+        require_tools: bool,
+        require_private: bool,
+        allow_trains: bool = False,
+        force: bool = False,
+    ) -> list[str]:
         """Ranked model ids for the cascade (best first), honouring filters."""
-        rows = self._get_rows(require_tools, force=force)
+        rows = self._get_rows(require_tools, allow_trains, force=force)
         out = []
         for r in rows:
             if not r["selectable"]:
@@ -210,14 +228,16 @@ class Ranker:
             out.append(r["id"])
         return out
 
-    def list_all(self, require_tools: bool = False, force: bool = False) -> list[dict[str, Any]]:
+    def list_all(
+        self, require_tools: bool = False, allow_trains: bool = False, force: bool = False
+    ) -> list[dict[str, Any]]:
         """Full ranked list (including skipped models + reasons) for /models."""
-        return self._get_rows(require_tools, force=force)
+        return self._get_rows(require_tools, allow_trains, force=force)
 
     def status(self) -> dict[str, Any]:
         with self._lock:
             info = {
-                str(k): {
+                f"require_tools={k[0]},allow_trains={k[1]}": {
                     "built": v["built"].isoformat(timespec="seconds"),
                     "age_seconds": int((_now() - v["built"]).total_seconds()),
                     "count": len(v["rows"]),
@@ -246,11 +266,15 @@ class Ranker:
                 target = _next_daily_run(hour, minute)
                 time.sleep(max(0, (target - _dt.datetime.now()).total_seconds()))
                 for rt in (False, True):
-                    try:
-                        self._get_rows(rt, force=True)
-                    except Exception as e:
-                        if self.log:
-                            self.log.warning("scheduled rebuild failed (require_tools=%s): %s", rt, e)
+                    for at in (False, True):
+                        try:
+                            self._get_rows(rt, at, force=True)
+                        except Exception as e:
+                            if self.log:
+                                self.log.warning(
+                                    "scheduled rebuild failed (require_tools=%s, allow_trains=%s): %s",
+                                    rt, at, e,
+                                )
 
         t = threading.Thread(target=loop, name="ranker-refresh", daemon=True)
         t.start()
