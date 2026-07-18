@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 300" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <rect width="920" height="300" rx="12" fill="#f6f8fa" stroke="#d0d7de"/>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#57606a"/>
+    </marker>
+    <marker id="arrowAccent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1a7f37"/>
+    </marker>
+  </defs>
+
+  <!-- retry / cascade loop above the proxy box -->
+  <path d="M415,70 C440,32 520,32 545,70" fill="none" stroke="#1a7f37" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrowAccent)"/>
+  <text x="480" y="24" text-anchor="middle" font-size="10.5" fill="#1a7f37">retries next-best free model on 429 / 5xx</text>
+
+  <!-- Box 1: Your App -->
+  <rect x="30" y="105" width="170" height="80" rx="8" fill="#ffffff" stroke="#57606a" stroke-width="1.5"/>
+  <text x="115" y="140" text-anchor="middle" font-size="16" font-weight="600" fill="#1f2328">Your App</text>
+  <text x="115" y="162" text-anchor="middle" font-size="11.5" fill="#57606a">your OpenRouter key</text>
+
+  <!-- Box 2: Proxy (accent) -->
+  <rect x="365" y="70" width="230" height="150" rx="10" fill="#dafbe1" stroke="#1a7f37" stroke-width="2"/>
+  <text x="480" y="106" text-anchor="middle" font-size="15" font-weight="700" fill="#116329">openrouter-free-</text>
+  <text x="480" y="126" text-anchor="middle" font-size="15" font-weight="700" fill="#116329">model-proxy</text>
+  <text x="480" y="152" text-anchor="middle" font-size="11.5" fill="#1a7f37">picks the best free model</text>
+  <text x="480" y="168" text-anchor="middle" font-size="11.5" fill="#1a7f37">never hardcoded, never expired</text>
+  <text x="480" y="200" text-anchor="middle" font-size="10.5" fill="#4d7c34">localhost:8787</text>
+
+  <!-- Box 3: OpenRouter -->
+  <rect x="720" y="105" width="170" height="80" rx="8" fill="#ffffff" stroke="#57606a" stroke-width="1.5"/>
+  <text x="805" y="140" text-anchor="middle" font-size="16" font-weight="600" fill="#1f2328">OpenRouter</text>
+  <text x="805" y="162" text-anchor="middle" font-size="11.5" fill="#57606a">:free models</text>
+
+  <!-- outbound arrows -->
+  <line x1="200" y1="128" x2="360" y2="128" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="280" y="118" text-anchor="middle" font-size="10.5" fill="#57606a">model: "auto"</text>
+
+  <line x1="595" y1="128" x2="715" y2="128" stroke="#57606a" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="655" y="118" text-anchor="middle" font-size="10.5" fill="#57606a">your key</text>
+
+  <!-- inbound (response) arrows, dashed -->
+  <line x1="715" y1="168" x2="595" y2="168" stroke="#8c959f" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+  <line x1="360" y1="168" x2="200" y2="168" stroke="#8c959f" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+
+  <text x="115" y="205" text-anchor="middle" font-size="10.5" fill="#8c959f">base_url = http://127.0.0.1:8787/v1</text>
+  <text x="460" y="252" text-anchor="middle" font-size="11" fill="#57606a">← response — the "X-Proxy-Model" header shows which model actually answered</text>
+</svg>
