@@ -48,7 +48,7 @@ DEFAULT_CONFIG = {
     "daily_refresh_at": "00:00",  # HH:MM local time the ranked list is rebuilt
     "cascade_depth": 5,
     "request_timeout": 120,
-    "defaults": {"require_tools": False, "require_private": False},
+    "defaults": {"require_tools": False, "require_private": False, "allow_trains": False},
     "locked": [],
     "denylist": {"models": [], "providers": []},
     "aliases": {"smart": "auto:private", "fast": "auto"},
@@ -104,7 +104,7 @@ def resolve_policy(model_field: str, body: dict, headers) -> dict:
 
     Returns a dict:
       {"mode": "auto"|"concrete", "model": <slug or None>,
-       "require_tools": bool, "require_private": bool,
+       "require_tools": bool, "require_private": bool, "allow_trains": bool,
        "fallback_auto": bool}   # concrete models: opt-in cascade to auto
 
     Precedence: request override > config default, except any policy named in
@@ -121,6 +121,7 @@ def resolve_policy(model_field: str, body: dict, headers) -> dict:
     locked = set(CONFIG.get("locked", []))
     require_tools = bool(d.get("require_tools"))
     require_private = bool(d.get("require_private"))
+    allow_trains = bool(d.get("allow_trains"))
 
     # A concrete slug (has "/" and isn't the auto sentinel) passes through.
     # A trailing ",auto" opts a concrete model into cascade-to-auto on failure.
@@ -133,13 +134,16 @@ def resolve_policy(model_field: str, body: dict, headers) -> dict:
             "model": head,
             "require_tools": require_tools,
             "require_private": require_private,
+            "allow_trains": allow_trains,
             "fallback_auto": fallback_auto,
         }
 
-    # auto[:flag[,flag]]
+    # auto[:flag[,flag]] — parsed from the full string, not `head`, since
+    # `head` is truncated at the first comma (needed for the concrete-model
+    # branch above but wrong here: "auto:tools,private" has two flags).
     flags = set()
-    if head.startswith("auto"):
-        _, _, flagstr = head.partition(":")
+    if raw.startswith("auto"):
+        _, _, flagstr = raw.partition(":")
         flags = {f.strip() for f in flagstr.split(",") if f.strip()}
 
     # Body signal: a tools array implies the caller needs tool support.
@@ -149,12 +153,15 @@ def resolve_policy(model_field: str, body: dict, headers) -> dict:
     # Header mirrors (for SDKs that can only set the model string).
     if _truthy(headers.get("X-Proxy-Require-Tools")):
         flags.add("tools")
-    if str(headers.get("X-Proxy-Privacy", "")).strip().lower() == "private":
+    privacy_header = str(headers.get("X-Proxy-Privacy", "")).strip().lower()
+    if privacy_header == "private":
         flags.add("private")
+    elif privacy_header == "any":
+        flags.add("any")
 
     # Apply request overrides in EITHER direction, unless the policy is locked
     # (a locked policy keeps the config default and ignores any request flag).
-    #   tighten: "tools", "private"      loosen: "notools", "logs"/"anyprivacy"
+    #   tighten: "tools", "private"      loosen: "notools", "logs"/"anyprivacy", "any"
     if "require_tools" not in locked:
         if "tools" in flags:
             require_tools = True
@@ -163,14 +170,20 @@ def resolve_policy(model_field: str, body: dict, headers) -> dict:
     if "require_private" not in locked:
         if "private" in flags:
             require_private = True
-        elif "logs" in flags or "anyprivacy" in flags:
+        elif "logs" in flags or "anyprivacy" in flags or "any" in flags:
             require_private = False
+    # "any" bypasses privacy-tier filtering entirely (private/logs/trains all
+    # eligible) — a stronger loosening than "logs", so it gets its own lock key.
+    if "allow_trains" not in locked:
+        if "any" in flags:
+            allow_trains = True
 
     return {
         "mode": "auto",
         "model": None,
         "require_tools": require_tools,
         "require_private": require_private,
+        "allow_trains": allow_trains,
         "fallback_auto": False,
     }
 
@@ -189,9 +202,13 @@ def build_cascade(policy: dict, force: bool = False) -> list[str]:
     if policy["mode"] == "concrete":
         chain = [policy["model"]]
         if policy["fallback_auto"]:
-            chain += RANKER.pick(policy["require_tools"], policy["require_private"], force=force)
+            chain += RANKER.pick(
+                policy["require_tools"], policy["require_private"], policy["allow_trains"], force=force
+            )
         return _dedupe(chain)
-    chain = RANKER.pick(policy["require_tools"], policy["require_private"], force=force)
+    chain = RANKER.pick(
+        policy["require_tools"], policy["require_private"], policy["allow_trains"], force=force
+    )
     chain = chain[: CONFIG["cascade_depth"]]
     # No free model qualifies → 503 by default, unless a last-resort model is
     # configured (opt-in; may be paid, so it's off unless explicitly set).
@@ -233,6 +250,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path, qs = parsed.path, parse_qs(parsed.query)
         require_tools = _truthy(qs.get("tools", ["0"])[0])
+        allow_trains = _truthy(qs.get("any", ["0"])[0])
         force = _truthy(qs.get("refresh", ["0"])[0])
 
         if path == "/status":
@@ -240,7 +258,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path in ("/models", "/v1/models"):
             try:
-                rows = RANKER.list_all(require_tools=require_tools, force=force)
+                rows = RANKER.list_all(require_tools=require_tools, allow_trains=allow_trains, force=force)
             except Exception as e:
                 self._send_json(503, {"error": f"could not fetch models: {e}"})
                 return

@@ -61,20 +61,23 @@ OpenRouter's free endpoints aren't all the same deal — each one is classified 
 | **logs** | not used for training, but retained/logged (e.g. for abuse monitoring) |
 | **trains** | may be used to train future models |
 
-**This proxy never auto-selects a `trains`-tier model — that tier is excluded entirely, no matter what you configure.** The only choice you have is whether `logs`-tier is *also* acceptable alongside `private`:
+By default this proxy never auto-selects a `trains`-tier model — that tier is excluded unless you explicitly opt in with `auto:any` (below). Short of that, the only choice you have is whether `logs`-tier is *also* acceptable alongside `private`:
 
 | value | behaviour |
 |---|---|
 | `auto` | best free model right now — `private` preferred, `logs` used only if no `private` model qualifies |
 | `auto:private` | restrict to `private` only (strictest — never logged, never trained on) |
 | `auto:logs` | explicitly allow `logs`-tier too (use to loosen a `private` default) |
+| `auto:any` | bypass privacy-tier filtering entirely — `private`, `logs`, **and `trains`** are all eligible (loosest; only use this if you're fine with a model that may train on your prompts) |
 | `auto:tools` / `auto:notools` | require / don't require tool-calling support |
 | `auto:tools,private` | combine flags |
 | `smart`, `fast` | your own aliases (see config) |
 | `vendor/model` | that exact model, passed through unchanged (free or paid) |
 | `vendor/model,auto` | that model, but fall back to `auto` if it fails |
 
-Flags also work as headers: `X-Proxy-Require-Tools: true`, `X-Proxy-Privacy: private`. Sending a `tools` array requires tool support automatically.
+Flags also work as headers: `X-Proxy-Require-Tools: true`, `X-Proxy-Privacy: private` (or `any`). Sending a `tools` array requires tool support automatically.
+
+`auto:any` is off by default (`defaults.allow_trains: false` in config) and, like the other policies, can be pinned with `"locked": ["allow_trains"]` so no request can turn it on.
 
 ### Endpoints (no key needed except the completion)
 
@@ -88,6 +91,7 @@ Flags also work as headers: `X-Proxy-Require-Tools: true`, `X-Proxy-Privacy: pri
 ```bash
 curl http://127.0.0.1:8787/models              # browse the ranked free models
 curl 'http://127.0.0.1:8787/models?tools=1'     # only tool-capable
+curl 'http://127.0.0.1:8787/models?any=1'       # include trains-tier models too
 curl 'http://127.0.0.1:8787/models?refresh=1'   # force a fresh scrape
 ```
 
@@ -103,8 +107,8 @@ Values here are **defaults**; a request can override them per-call — unless th
   "daily_refresh_at": "00:00",  // HH:MM local time the ranked list is rebuilt
   "cascade_depth": 5,           // models to try before giving up
   "request_timeout": 120,
-  "defaults":  { "require_tools": false, "require_private": false },
-  "locked":    [],              // e.g. ["require_private"] to enforce it
+  "defaults":  { "require_tools": false, "require_private": false, "allow_trains": false },
+  "locked":    [],              // e.g. ["require_private"] to enforce it, or ["allow_trains"] to keep auto:any off
   "denylist":  { "models": [], "providers": [] },   // drop these before ranking
   "aliases":   { "smart": "auto:private", "fast": "auto" },
   "last_resort_model": null     // null → return 503 when no free model qualifies

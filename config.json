@@ -7,7 +7,8 @@
   "request_timeout": 120,
   "defaults": {
     "require_tools": false,
-    "require_private": false
+    "require_private": false,
+    "allow_trains": false
   },
   "locked": [],
   "denylist": {
