@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from openrouter import TIER_LOGS, TIER_PRIVATE, Availability, Privacy
 
-EXPIRY_BUFFER_DAYS = 2
+EXPIRY_BUFFER_DAYS = 0  # a model is usable right up until it actually expires
 DEFAULT_WANT = 3
 MAX_PRIVACY_LOOKUPS = 12
 
@@ -122,7 +122,10 @@ def select_models(
         if require_tools and not c.supports_tools:
             c.reason = "skipped: free endpoint does not support tool calling"
         elif is_expired(c.expiration_date, today, expiry_buffer_days):
-            c.reason = f"skipped: expires {c.expiration_date} (within {expiry_buffer_days}d buffer)"
+            if expiry_buffer_days > 0:
+                c.reason = f"skipped: expires {c.expiration_date} (within {expiry_buffer_days}d buffer)"
+            else:
+                c.reason = f"skipped: expired {c.expiration_date}"
         else:
             eligible.append(c)
 

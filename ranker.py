@@ -5,9 +5,14 @@ cached "what are the best free models right now" service the proxy can query
 per request without re-scraping OpenRouter every time.
 
 Caching model:
-- The ranked selection is rebuilt at most every ``ttl_seconds`` (a cold or
-  stale cache triggers a rebuild; a background thread also refreshes it so
-  live requests rarely block on scrapes).
+- A background thread force-rebuilds the selection once a day at a fixed
+  wall-clock time (default 00:00 local, midnight), so it's freshly scraped daily
+  regardless of when the process started — not "24h after whoever started
+  it", which would drift.
+- ``ttl_seconds`` is a separate, on-demand safety net used only by requests:
+  if the cache is missing or older than ``ttl_seconds`` when a request comes
+  in (e.g. right after startup, before the first scheduled run), it rebuilds
+  synchronously rather than serving nothing.
 - Privacy scrapes (the expensive per-model page fetch) are cached for 24h on
   disk, mirroring the sibling rotator, so a rebuild is usually a couple of
   cheap API calls.
@@ -31,6 +36,21 @@ import openrouter
 import selection
 
 PRIVACY_TTL_HOURS = 24
+DEFAULT_REFRESH_HOUR = 0
+DEFAULT_REFRESH_MINUTE = 0
+
+
+def _next_daily_run(hour: int, minute: int) -> _dt.datetime:
+    """The next occurrence of hour:minute local time, today or tomorrow.
+
+    Recomputed fresh on every loop iteration (rather than sleeping a fixed
+    86400s) so it stays correct across DST transitions.
+    """
+    now = _dt.datetime.now()
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += _dt.timedelta(days=1)
+    return target
 
 
 def cache_dir() -> Path:
@@ -212,19 +232,25 @@ class Ranker:
             pass
         return {"ttl_seconds": self.ttl, "top_auto_pick": top, "selections": info}
 
-    def start_background_refresh(self) -> None:
-        """Warm both selection variants periodically so requests rarely block."""
+    def start_background_refresh(
+        self, hour: int = DEFAULT_REFRESH_HOUR, minute: int = DEFAULT_REFRESH_MINUTE
+    ) -> None:
+        """Force a rebuild once a day at hour:minute local time (default
+        00:00, midnight), so requests are served from a same-day-fresh cache
+        without ever blocking on a scrape."""
 
         def loop():
             import time
 
             while True:
+                target = _next_daily_run(hour, minute)
+                time.sleep(max(0, (target - _dt.datetime.now()).total_seconds()))
                 for rt in (False, True):
                     try:
                         self._get_rows(rt, force=True)
-                    except Exception:
-                        pass
-                time.sleep(max(60, self.ttl))
+                    except Exception as e:
+                        if self.log:
+                            self.log.warning("scheduled rebuild failed (require_tools=%s): %s", rt, e)
 
         t = threading.Thread(target=loop, name="ranker-refresh", daemon=True)
         t.start()

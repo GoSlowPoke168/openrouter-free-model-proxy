@@ -10,7 +10,7 @@ It's a small local, OpenAI-compatible proxy. Any app in any language can use it 
 
 1. Fetches OpenRouter's live `:free` catalogue and its real-world usage ranking.
 2. Filters out models that are expiring soon, have poor uptime, or train on your prompts (see [privacy tiers](#privacy-tiers) below).
-3. Caches the ranked result (rebuilt every `ttl_seconds`, refreshed in the background so requests never block on it).
+3. Caches the ranked result, rebuilt automatically once a day at 00:00 local time (in the background, so requests never block on it) — models are only dropped once actually expired, never pre-emptively.
 4. On each request, tries the top-ranked model; if it 429s or errors, retries the next-best instantly — no manual intervention, no restart.
 
 ## Install
@@ -99,7 +99,8 @@ Values here are **defaults**; a request can override them per-call — unless th
 {
   "host": "127.0.0.1",
   "port": 8787,
-  "ttl_seconds": 3600,          // how often the ranked list is rebuilt
+  "ttl_seconds": 86400,         // on-demand safety net only — see daily_refresh_at
+  "daily_refresh_at": "00:00",  // HH:MM local time the ranked list is rebuilt
   "cascade_depth": 5,           // models to try before giving up
   "request_timeout": 120,
   "defaults":  { "require_tools": false, "require_private": false },

@@ -44,7 +44,8 @@ log = logging.getLogger("proxy")
 DEFAULT_CONFIG = {
     "host": "127.0.0.1",
     "port": 8787,
-    "ttl_seconds": 3600,
+    "ttl_seconds": 86400,       # on-demand safety net only; see daily_refresh_at
+    "daily_refresh_at": "00:00",  # HH:MM local time the ranked list is rebuilt
     "cascade_depth": 5,
     "request_timeout": 120,
     "defaults": {"require_tools": False, "require_private": False},
@@ -53,6 +54,17 @@ DEFAULT_CONFIG = {
     "aliases": {"smart": "auto:private", "fast": "auto"},
     "last_resort_model": None,
 }
+
+
+def _parse_hhmm(s: str, default: tuple[int, int] = (0, 0)) -> tuple[int, int]:
+    try:
+        h, m = s.split(":")
+        h, m = int(h), int(m)
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h, m
+    except (ValueError, AttributeError):
+        pass
+    return default
 
 
 def load_config() -> dict:
@@ -337,11 +349,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    RANKER.start_background_refresh()
+    hour, minute = _parse_hhmm(CONFIG.get("daily_refresh_at", "00:00"))
+    RANKER.start_background_refresh(hour, minute)
     server = ThreadingHTTPServer((CONFIG["host"], CONFIG["port"]), Handler)
     log.info(
-        "openrouter-free-model-proxy on http://%s:%s  (base_url .../v1)",
-        CONFIG["host"], CONFIG["port"],
+        "openrouter-free-model-proxy on http://%s:%s  (base_url .../v1, daily refresh at %02d:%02d)",
+        CONFIG["host"], CONFIG["port"], hour, minute,
     )
     try:
         server.serve_forever()
