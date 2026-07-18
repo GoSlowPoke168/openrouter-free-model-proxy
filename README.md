@@ -1,8 +1,8 @@
 # openrouter-free-model-proxy
 
-**The point of this project:** you should never have to hardcode a specific free OpenRouter model. Free (`:free`) models get rate-limited without warning, and they expire on schedules you'd otherwise have to track by hand — hardcode one and your app eventually just breaks. This proxy makes that entirely someone else's problem: point your app at it, send `model: "auto"`, and it always hands you a currently-healthy free model — re-ranking automatically as the catalogue changes, and falling back instantly if the one it picked fails mid-request. No model names to update, no expiration dates to watch.
+`openrouter-free-model-proxy` acts as an automatic router and manager for free OpenRouter models so you never have to worry about getting rate-limited or remembering to switch to a different model after one expires. This proxy makes that entirely someone else's problem: point your app at it, send `model: "auto"`, and it always assigns you the best free model available — re-ranking automatically as the catalogue changes, and falling back instantly if the one it picked fails mid-request. No model names to update, no expiration dates to watch.
 
-It's a small local, OpenAI-compatible proxy. Any app in any language can use it — you keep using your own OpenRouter key, you just change the `base_url`.
+It's a small local proxy that is compatible with any LLM SDK like the OpenAI Python SDK. Any app in any language can use it — you keep using your own OpenRouter key, you just change the `base_url`.
 
 ![how it works](diagram.svg)
 
