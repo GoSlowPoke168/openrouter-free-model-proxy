@@ -1,0 +1,21 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "ttl_seconds": 3600,
+  "cascade_depth": 5,
+  "request_timeout": 120,
+  "defaults": {
+    "require_tools": false,
+    "require_private": false
+  },
+  "locked": [],
+  "denylist": {
+    "models": [],
+    "providers": []
+  },
+  "aliases": {
+    "smart": "auto:private",
+    "fast": "auto"
+  },
+  "last_resort_model": null
+}
