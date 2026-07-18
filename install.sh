@@ -4,7 +4,7 @@
 # One-liner (installs to ~/openrouter-free-model-proxy and runs it as a
 # background systemd --user service):
 #
-#   curl -fsSL https://raw.githubusercontent.com/jeremyhou/openrouter-free-model-proxy/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/GoSlowPoke168/openrouter-free-model-proxy/main/install.sh | bash
 #
 # Env overrides:
 #   DEST=/path        where to install        (default: ~/openrouter-free-model-proxy)
@@ -12,7 +12,7 @@
 #   NO_SERVICE=1      skip the systemd service (just set up the venv)
 set -euo pipefail
 
-REPO="${REPO:-https://github.com/jeremyhou/openrouter-free-model-proxy}"
+REPO="${REPO:-https://github.com/GoSlowPoke168/openrouter-free-model-proxy}"
 DEST="${DEST:-$HOME/openrouter-free-model-proxy}"
 
 command -v python3 >/dev/null || { echo "error: python3 is required"; exit 1; }

@@ -12,13 +12,13 @@ your app ──(your OpenRouter key)──▶ proxy (localhost:8787) ──▶ O
 One line (clones to `~/openrouter-free-model-proxy`, runs it as a background service):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jeremyhou/openrouter-free-model-proxy/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/GoSlowPoke168/openrouter-free-model-proxy/main/install.sh | bash
 ```
 
 Or manually:
 
 ```bash
-git clone https://github.com/jeremyhou/openrouter-free-model-proxy
+git clone https://github.com/GoSlowPoke168/openrouter-free-model-proxy
 cd openrouter-free-model-proxy
 python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
 ./run_proxy.sh                 # foreground, or:
@@ -101,7 +101,7 @@ Values here are **defaults**; a request can override them per-call — unless th
 
 Free OpenRouter models churn constantly — rate limits, expiries, models appearing and vanishing — and some `:free` slugs are secretly backed by the same quota that's already throttling you. Hardcoding a model per project means chasing 429s forever. This proxy makes "use whatever free model is healthy right now" a one-line `base_url` change.
 
-How it picks: it fetches OpenRouter's `:free` catalogue, ranks by real-world usage, filters out training-on-prompts providers and endpoints with poor uptime, applies your denylist/flags, and caches the result (rebuilt every `ttl_seconds`, refreshed in the background so requests never block). On a 429/5xx it immediately retries the next-best model. The ranking/privacy logic is lifted from the sibling project [`hermes-openrouter-free-rotator`](https://github.com/jeremyhou/hermes-openrouter-free-rotator).
+How it picks: it fetches OpenRouter's `:free` catalogue, ranks by real-world usage, filters out training-on-prompts providers and endpoints with poor uptime, applies your denylist/flags, and caches the result (rebuilt every `ttl_seconds`, refreshed in the background so requests never block). On a 429/5xx it immediately retries the next-best model. The ranking/privacy logic is lifted from the sibling project [`hermes-openrouter-free-rotator`](https://github.com/GoSlowPoke168/hermes-openrouter-free-rotator).
 
 Scope: `POST /v1/chat/completions` only (no legacy completions/embeddings yet). Binds localhost by default; widen `host` at your own risk (no TLS built in). Billing is whatever OpenRouter tracks against the key you send.
 
