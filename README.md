@@ -10,7 +10,7 @@ It's a small local proxy that is compatible with any LLM SDK like the OpenAI Pyt
 
 1. Fetches OpenRouter's live `:free` catalogue and its real-world usage ranking.
 2. Filters out models that are expiring soon, have poor uptime, or train on your prompts (see [privacy tiers](#privacy-tiers) below).
-3. Caches the ranked result, rebuilt automatically once a day at 00:00 local time (in the background, so requests never block on it) — models are dropped once they're within 1 day of expiring.
+3. Caches the ranked result, rebuilt automatically once a day at 00:01 UTC — shortly after OpenRouter's free-tier quota resets (in the background, so requests never block on it) — models are dropped once they're within 1 day of expiring.
 4. On each request, tries the top-ranked model; if it 429s or errors, retries the next-best instantly — no manual intervention, no restart.
 
 ## Install
@@ -104,7 +104,7 @@ Values here are **defaults**; a request can override them per-call — unless th
   "host": "127.0.0.1",
   "port": 8787,
   "ttl_seconds": 86400,         // on-demand safety net only — see daily_refresh_at
-  "daily_refresh_at": "00:00",  // HH:MM local time the ranked list is rebuilt
+  "daily_refresh_at": "00:01",  // HH:MM UTC the ranked list is rebuilt
   "cascade_depth": 5,           // models to try before giving up
   "request_timeout": 120,
   "defaults":  { "require_tools": false, "require_private": false, "allow_trains": false },
