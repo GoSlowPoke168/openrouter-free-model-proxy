@@ -6,9 +6,9 @@ per request without re-scraping OpenRouter every time.
 
 Caching model:
 - A background thread force-rebuilds the selection once a day at a fixed
-  wall-clock time (default 00:00 local, midnight), so it's freshly scraped daily
-  regardless of when the process started — not "24h after whoever started
-  it", which would drift.
+  UTC time (default 00:01, shortly after OpenRouter's free-tier quota resets
+  at 00:00 UTC), so it's freshly scraped daily regardless of when the
+  process started — not "24h after whoever started it", which would drift.
 - ``ttl_seconds`` is a separate, on-demand safety net used only by requests:
   if the cache is missing or older than ``ttl_seconds`` when a request comes
   in (e.g. right after startup, before the first scheduled run), it rebuilds
@@ -37,16 +37,16 @@ import selection
 
 PRIVACY_TTL_HOURS = 24
 DEFAULT_REFRESH_HOUR = 0
-DEFAULT_REFRESH_MINUTE = 0
+DEFAULT_REFRESH_MINUTE = 1
 
 
 def _next_daily_run(hour: int, minute: int) -> _dt.datetime:
-    """The next occurrence of hour:minute local time, today or tomorrow.
+    """The next occurrence of hour:minute UTC, today or tomorrow.
 
-    Recomputed fresh on every loop iteration (rather than sleeping a fixed
-    86400s) so it stays correct across DST transitions.
+    UTC rather than local time so this stays pinned to OpenRouter's daily
+    quota reset (00:00 UTC) year-round, with no DST drift.
     """
-    now = _dt.datetime.now()
+    now = _dt.datetime.now(_dt.timezone.utc)
     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if target <= now:
         target += _dt.timedelta(days=1)
@@ -255,16 +255,16 @@ class Ranker:
     def start_background_refresh(
         self, hour: int = DEFAULT_REFRESH_HOUR, minute: int = DEFAULT_REFRESH_MINUTE
     ) -> None:
-        """Force a rebuild once a day at hour:minute local time (default
-        00:00, midnight), so requests are served from a same-day-fresh cache
-        without ever blocking on a scrape."""
+        """Force a rebuild once a day at hour:minute UTC (default 00:01,
+        shortly after OpenRouter's daily reset), so requests are served from
+        a same-day-fresh cache without ever blocking on a scrape."""
 
         def loop():
             import time
 
             while True:
                 target = _next_daily_run(hour, minute)
-                time.sleep(max(0, (target - _dt.datetime.now()).total_seconds()))
+                time.sleep(max(0, (target - _dt.datetime.now(_dt.timezone.utc)).total_seconds()))
                 for rt in (False, True):
                     for at in (False, True):
                         try:

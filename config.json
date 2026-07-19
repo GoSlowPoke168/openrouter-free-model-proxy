@@ -2,7 +2,7 @@
   "host": "127.0.0.1",
   "port": 8787,
   "ttl_seconds": 86400,
-  "daily_refresh_at": "00:00",
+  "daily_refresh_at": "00:01",
   "cascade_depth": 5,
   "request_timeout": 120,
   "defaults": {
