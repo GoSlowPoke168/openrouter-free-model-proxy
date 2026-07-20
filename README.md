@@ -33,6 +33,14 @@ python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
 
 Requires `python3` + `git`. Only dependency: `requests`. Set `NO_SERVICE=1` before the one-liner to skip the service.
 
+**Service name:** `openrouter-free-model-proxy` (systemd `--user` unit). Useful commands:
+
+```bash
+systemctl --user restart openrouter-free-model-proxy   # reload after a config/code change
+systemctl --user status openrouter-free-model-proxy
+journalctl --user -u openrouter-free-model-proxy -f    # tail logs
+```
+
 ## Use
 
 Point your client at the proxy and send `model: "auto"`:
