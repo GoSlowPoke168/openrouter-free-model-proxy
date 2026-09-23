@@ -1,5 +1,12 @@
 # openrouter-free-model-proxy
 
+> [!IMPORTANT]
+> This repository is very behind the more "niche" project I made which is the [https://github.com/GoSlowPoke168/hermes-openrouter-free-rotator](https://github.com/GoSlowPoke168/hermes-openrouter-free-rotator) which has many of the bug fixes that have not been synced to this more "general use" project yet.
+>
+> The goal of this project was to act as a API proxy so an application that needs an API key can simply point to this proxy url which automatically updates the Openrouter free model.
+>
+> If you are interested in continuing the development and improvement of this project, feel free to do so and create some PR's.
+
 `openrouter-free-model-proxy` acts as an automatic router and manager for free OpenRouter models so you never have to worry about getting rate-limited or remembering to switch to a different model after one expires. This proxy makes that entirely someone else's problem: point your app at it, send `model: "auto"`, and it always assigns you the best free model available — re-ranking automatically as the catalogue changes, and falling back instantly if the one it picked fails mid-request. No model names to update, no expiration dates to watch.
 
 It's a small local proxy that is compatible with any LLM SDK like the OpenAI Python SDK. Any app in any language can use it — you keep using your own OpenRouter key, you just change the `base_url`.
