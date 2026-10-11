@@ -93,10 +93,23 @@ client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="<your OpenRouter k
 client.chat.completions.create(model="auto", messages=[{"role":"user","content":"hi"}])
 ```
 
+```js
+import OpenAI from "openai";
+const client = new OpenAI({ baseURL: "http://127.0.0.1:8787/v1", apiKey: process.env.OPENROUTER_API_KEY });
+await client.chat.completions.create({ model: "auto", messages: [{ role: "user", content: "hi" }] });
+```
+
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H "Authorization: Bearer $OPENROUTER_API_KEY" \
   -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'
+```
+
+**Existing apps, no code changes:** most apps built on an OpenAI SDK read these variables. Any model name without a `/` (like a hardcoded `gpt-4o-mini`) is routed as `auto`.
+
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:8787/v1
+export OPENAI_API_KEY=$OPENROUTER_API_KEY
 ```
 
 The proxy forwards your key straight to OpenRouter (it stores nothing and never logs your key). Add `"stream": true` for token streaming. The response header `X-Proxy-Model` tells you which model actually answered (`X-Proxy-Fallback: true` if it wasn't the first pick).
