@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -40,6 +41,8 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | proxy | %(levelname)s | %(message)s",
+    # pythonw (the Windows background task) has no stderr, so log to a file there.
+    handlers=None if sys.stderr else [logging.FileHandler(ranker_mod.cache_dir() / "proxy.log")],
 )
 log = logging.getLogger("proxy")
 
@@ -90,7 +93,8 @@ def load_config(path: str = CONFIG_PATH) -> dict:
         user = {}
     except (OSError, ValueError) as e:
         # Falling back to defaults could silently drop a locked privacy policy.
-        raise SystemExit(f"cannot read {path}: {e}")
+        log.error("cannot read %s: %s", path, e)
+        raise SystemExit(1)
     cfg.update(user)
     # shallow-merge nested dicts so partial overrides keep defaults
     for key in ("defaults", "denylist"):
@@ -106,9 +110,8 @@ def load_config(path: str = CONFIG_PATH) -> dict:
             else selection.DEFAULT_MODE
         )
     if d["mode"] not in selection.MODES:
-        raise SystemExit(
-            f"{path}: unknown defaults.mode {d['mode']!r} (choose from {', '.join(selection.MODES)})"
-        )
+        log.error("%s: unknown defaults.mode %r (choose from %s)", path, d["mode"], ", ".join(selection.MODES))
+        raise SystemExit(1)
     cfg["locked"] = {
         "mode" if k in ("require_private", "allow_trains") else k for k in cfg.get("locked") or []
     }

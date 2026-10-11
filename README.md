@@ -44,6 +44,19 @@ systemctl --user status openrouter-free-model-proxy
 journalctl --user -u openrouter-free-model-proxy -f    # tail logs
 ```
 
+### Windows
+
+```powershell
+irm https://raw.githubusercontent.com/GoSlowPoke168/openrouter-free-model-proxy/main/install.ps1 | iex
+```
+
+Installs to `~\openrouter-free-model-proxy` and starts it in the background at every logon (scheduled task `openrouter-free-model-proxy`, no console window). Logs go to `~\.cache\openrouter-free-model-proxy\proxy.log`. Same `DEST` / `REPO` / `NO_SERVICE` overrides, set as `$env:NO_SERVICE = "1"`.
+
+```powershell
+Stop-ScheduledTask openrouter-free-model-proxy; Start-ScheduledTask openrouter-free-model-proxy   # restart after a config change
+Unregister-ScheduledTask openrouter-free-model-proxy -Confirm:$false                            # remove
+```
+
 ## Use
 
 Point your client at the proxy and send `model: "auto"`:
@@ -153,6 +166,7 @@ Values here are **defaults**; a request can override them per-call — unless th
 
 ```
 install.sh          internet installer (clone → venv → service)
+install.ps1         same for Windows (clone → venv → scheduled task)
 install_service.sh  register the systemd --user service
 run_proxy.sh        run the server directly
 proxy.py            HTTP server: routing, pass-through auth, cascade, streaming
