@@ -74,6 +74,10 @@ class Availability:
     best_uptime_1d: float | None = None
     endpoint_provider: str | None = None
     fetched: bool = True
+    # False only when OpenRouter offers no free endpoint at all. Distinct from
+    # ok=False, which also covers "offered but down today" — a down endpoint is
+    # still worth listing (it usually recovers), a missing one never is.
+    has_free_endpoint: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +86,7 @@ class Availability:
             "best_uptime_1d": self.best_uptime_1d,
             "endpoint_provider": self.endpoint_provider,
             "fetched": self.fetched,
+            "has_free_endpoint": self.has_free_endpoint,
         }
 
 
@@ -111,7 +116,15 @@ def fetch_availability(model_id: str, timeout: int = 20, min_uptime: float = MIN
         raw = json.loads(_http_get(ENDPOINTS_API_URL.format(model_id=model_id), timeout=timeout))
     except Exception:
         return Availability(ok=True, reason="availability unknown (endpoints API unreachable)", fetched=False)
-    return assess_availability(raw.get("data") or {}, min_uptime=min_uptime)
+    try:
+        return assess_availability(raw.get("data") or {}, min_uptime=min_uptime)
+    except Exception:
+        # Fail open for the same reason an unreachable API does: an unexpected
+        # payload shape must not drop a model, and this runs per candidate, so
+        # one odd endpoint would otherwise abort the whole sync.
+        return Availability(
+            ok=True, reason="availability unknown (unexpected endpoints payload)", fetched=False
+        )
 
 
 def assess_availability(data: dict[str, Any], min_uptime: float = MIN_UPTIME_1D) -> Availability:
@@ -125,7 +138,11 @@ def assess_availability(data: dict[str, Any], min_uptime: float = MIN_UPTIME_1D)
     """
     endpoints = data.get("endpoints") if isinstance(data.get("endpoints"), list) else []
     if not endpoints:
-        return Availability(ok=False, reason="no free endpoint currently offered")
+        return Availability(
+            ok=False,
+            reason="no free endpoint currently offered",
+            has_free_endpoint=False,
+        )
 
     def uptime(ep: dict) -> float | None:
         v = ep.get("uptime_last_1d")
@@ -141,8 +158,14 @@ def assess_availability(data: dict[str, Any], min_uptime: float = MIN_UPTIME_1D)
             return Availability(True, f"uptime {best:.0f}% (1d)", best, provider)
         return Availability(False, f"free endpoint down (uptime {best:.0f}% 1d)", best, provider)
 
-    # No uptime reported anywhere — fall back to the status flag.
-    if any((ep.get("status") is None or ep.get("status") >= 0) for ep in endpoints):
+    # No uptime reported anywhere — fall back to the status flag. A missing or
+    # non-numeric status counts as fine: this branch already means "we have no
+    # real signal", so it should not invent a negative one.
+    def status_ok(ep: dict) -> bool:
+        status = ep.get("status")
+        return not isinstance(status, (int, float)) or status >= 0
+
+    if any(status_ok(ep) for ep in endpoints):
         return Availability(True, "status ok, uptime n/a", None, provider)
     return Availability(False, "free endpoint unavailable (status)", None, provider)
 
