@@ -1,11 +1,7 @@
 # openrouter-free-model-proxy
 
-> [!IMPORTANT]
-> This repository is very behind the more "niche" project I made which is the [https://github.com/GoSlowPoke168/hermes-openrouter-free-rotator](https://github.com/GoSlowPoke168/hermes-openrouter-free-rotator) which has many of the bug fixes that have not been synced to this more "general use" project yet.
->
-> The goal of this project was to act as a API proxy so an application that needs an API key can simply point to this proxy url which automatically updates the Openrouter free model.
->
-> If you are interested in continuing the development and improvement of this project, feel free to do so and create some PR's.
+> [!NOTE]
+> The general-purpose sibling of [hermes-openrouter-free-rotator](https://github.com/GoSlowPoke168/hermes-openrouter-free-rotator), synced with its ranking and privacy logic. PRs welcome.
 
 `openrouter-free-model-proxy` acts as an automatic router and manager for free OpenRouter models so you never have to worry about getting rate-limited or remembering to switch to a different model after one expires. This proxy makes that entirely someone else's problem: point your app at it, send `model: "auto"`, and it always assigns you the best free model available — re-ranking automatically as the catalogue changes, and falling back instantly to the next-best model if the one it picked fails. No model names to update, no expiration dates to watch.
 
@@ -16,7 +12,7 @@ It's a small local proxy that is compatible with any LLM SDK like the OpenAI Pyt
 ## How it works
 
 1. Fetches OpenRouter's live `:free` catalogue and its real-world usage ranking.
-2. Filters out models that are expiring soon, have poor uptime, or train on your prompts (see [privacy tiers](#privacy-tiers) below).
+2. Filters out models that are expiring soon, have poor uptime, or fall outside your privacy [mode](#modes).
 3. Caches the ranked result — built at startup, then rebuilt automatically once a day at 00:01 UTC, shortly after OpenRouter's free-tier quota resets (in the background, so requests never block on it). Models are dropped once they're within 1 day of expiring.
 4. On each request, tries the top-ranked model; if it's rate-limited, down or times out, retries the next-best instantly — no manual intervention, no restart. Errors no other model could fix (bad key, no credits, invalid request) come straight back to you (see [errors](#errors)).
 
@@ -76,49 +72,37 @@ OpenRouter's free endpoints aren't all the same deal — each one is classified 
 | **logs** | not used for training, but retained/logged (e.g. for abuse monitoring) |
 | **trains** | may be used to train future models |
 
-A model whose privacy tier couldn't be determined is never auto-selected.
-
 ### Modes
 
-A **mode** decides which tiers may be auto-selected, and whether privacy or popularity wins when they disagree:
+A mode picks which tiers can be auto-selected (a model with an unknown tier never is). Default: `defaults.mode` in config.
 
-| mode | selectable tiers | order |
+| mode | tiers | order |
 |---|---|---|
 | `strict` | private | rank |
-| `balanced` *(default)* | private, logs | every `private` model before any `logs` one |
-| `relaxed` | private, logs | best rank wins, regardless of tier |
-| `loose` | private, logs, **trains** | best rank wins — only use this if you're fine with a model that may train on your prompts |
-
-`balanced` and `relaxed` allow the same models and differ only in ordering. The default comes from `defaults.mode` in config.
+| `balanced` *(default)* | private, logs | all `private` before any `logs` |
+| `relaxed` | private, logs | best rank wins |
+| `loose` | private, logs, **trains** | best rank wins |
 
 ### Model strings
 
 | value | behaviour |
 |---|---|
 | `auto` | best free model right now, under the default mode |
-| `auto:strict` / `auto:balanced` / `auto:relaxed` / `auto:loose` | pick a mode for this request |
-| `auto:private` / `auto:logs` / `auto:any` | older names, still accepted: `strict` / `balanced` / `loose` |
+| `auto:strict`, `auto:relaxed`, … | pick a mode (old `auto:private` / `auto:logs` / `auto:any` still work) |
 | `auto:tools` / `auto:notools` | require / don't require tool-calling support |
-| `auto:tools,strict` | combine flags (conflicting modes resolve to the strictest) |
+| `auto:tools,strict` | combine flags |
 | `smart`, `fast` | your own aliases (see config) |
 | `vendor/model` | that exact model, passed through unchanged (free or paid) |
-| `vendor/model,auto` | that model, but fall back to `auto` if it fails (`vendor/model,auto:strict` also works) |
-| anything else without a `/` (e.g. `gpt-4o`) | treated as `auto` |
+| `vendor/model,auto` | that model, falling back to `auto` (or `auto:<flags>`) if it fails |
+| any other name without a `/` | treated as `auto` |
 
-An unknown flag (e.g. a typo like `auto:privte`) is rejected with a 400 rather than silently ignored.
-
-Flags also work as headers: `X-Proxy-Require-Tools: true`, `X-Proxy-Privacy: <mode>` (`private` and `any` also accepted). Sending a `tools` array requires tool support automatically.
+Unknown flags are a 400. Headers work too: `X-Proxy-Privacy: <mode>`, `X-Proxy-Require-Tools: true`; a `tools` array implies tool support.
 
 ### Errors
 
-| what happened | what the proxy does |
-|---|---|
-| rate limit (429), outage (5xx), timeout, model gone (404), or a 200 that carries an error | tries the next model |
-| bad key (401), no credits (402), moderation (403), invalid request (400) | returns OpenRouter's error to you immediately — another model would fail the same way |
-| every model rate-limited | `429` with per-model `details` |
-| every model failed, mixed reasons | `502` with per-model `details` |
-
-When streaming, the proxy waits for the first data event before sending anything, so a failure reported at the very start of a stream still falls back. Once tokens are flowing, a failure ends the stream — it can't switch models mid-answer.
+- **Rate limit, outage, timeout, missing model** → tries the next model. If all fail: `429` if every one was rate-limited, else `502`.
+- **Bad key, no credits, invalid request** (400/401/402/403) → OpenRouter's error is returned as-is; no other model would help.
+- **Streaming** can fall back until the first token is sent, not after.
 
 ### Endpoints (no key needed except the completion)
 
@@ -127,7 +111,7 @@ When streaming, the proxy waits for the first data event before sending anything
 | POST | `/v1/chat/completions` | the proxy (needs your key) |
 | GET  | `/models` | ranked free models with tier / uptime / tools / reason |
 | GET  | `/v1/models` | same list, OpenAI `{data:[{id}]}` shape |
-| GET  | `/status` | cache age + current top pick (never triggers a rebuild) |
+| GET  | `/status` | cache age + current top pick |
 
 ```bash
 curl http://127.0.0.1:8787/models              # browse the ranked free models
@@ -157,9 +141,8 @@ Values here are **defaults**; a request can override them per-call — unless th
 ```
 
 - **denylist** — exclude specific models or endpoint-providers (e.g. `"providers": ["Google AI Studio"]` to avoid free endpoints backed by an already-rate-limited upstream).
-- **locked** — turn a default into a hard policy nothing can loosen (`"mode"`, `"require_tools"`).
-- Older configs using `require_private` / `allow_trains` still work: they map to `strict` / `loose`, and locking either one locks `mode`.
-- An invalid `config.json` or unknown mode stops the proxy at startup instead of silently falling back to defaults.
+- **locked** — `"mode"` / `"require_tools"`: requests can tighten them, never loosen.
+- Old `require_private` / `allow_trains` configs still work (→ `strict` / `loose`).
 - **last_resort_model** — off by default (so it's always $0); set a paid model to avoid a hard 503 when no free model is healthy.
 
 ## Scope
