@@ -7,14 +7,40 @@
 
 It's a small local proxy that is compatible with any LLM SDK like the OpenAI Python SDK. Any app in any language can use it — you keep using your own OpenRouter key, you just change the `base_url`.
 
-![how it works](diagram.svg)
+```mermaid
+%%{init: {"sequence": {"mirrorActors": false}}}%%
+sequenceDiagram
+    autonumber
+    participant App as Your app
+    participant P as Proxy<br/>localhost:8787
+    participant OR as OpenRouter
+
+    App->>P: model: "auto" + your OpenRouter key
+    Note over P: picks from the cached<br/>ranking of free models
+    P->>OR: best free model
+    OR-->>P: 429 rate-limited
+    Note over P,OR: falls back automatically
+    P->>OR: next-best free model
+    OR-->>P: 200 OK
+    P-->>App: response + X-Proxy-Model header
+```
 
 ## How it works
 
-1. Fetches OpenRouter's live `:free` catalogue and its real-world usage ranking.
-2. Filters out models that are expiring soon, have poor uptime, or fall outside your privacy [mode](#modes).
-3. Caches the ranked result — built at startup, then rebuilt automatically once a day at 00:01 UTC, shortly after OpenRouter's free-tier quota resets (in the background, so requests never block on it). Models are dropped once they're within 1 day of expiring.
-4. On each request, tries the top-ranked model; if it's rate-limited, down or times out, retries the next-best instantly — no manual intervention, no restart. Errors no other model could fix (bad key, no credits) come straight back to you (see [errors](#errors)).
+```mermaid
+flowchart TB
+    subgraph daily ["Rebuilt at startup and daily at 00:01 UTC"]
+        direction LR
+        A["OpenRouter<br/>:free models"] --> B["Drop models<br/>expiring ≤ 1 day"] --> C["Rank by<br/>real-world usage"] --> D["Drop endpoints<br/>down today"] --> E["Classify privacy<br/>private · logs · trains"]
+    end
+    subgraph request ["On every request"]
+        direction LR
+        F["Keep models your<br/>mode + tools allow"] --> G["Try the best"] -->|"429 · 5xx · timeout"| H["Try the next-best"]
+    end
+    daily -- "cached ranking" --> request
+```
+
+Errors no other model could fix (bad key, no credits) come straight back to you — see [errors](#errors).
 
 ## Install
 
