@@ -93,12 +93,6 @@ client = OpenAI(base_url="http://127.0.0.1:8787/v1", api_key="<your OpenRouter k
 client.chat.completions.create(model="auto", messages=[{"role":"user","content":"hi"}])
 ```
 
-```js
-import OpenAI from "openai";
-const client = new OpenAI({ baseURL: "http://127.0.0.1:8787/v1", apiKey: process.env.OPENROUTER_API_KEY });
-await client.chat.completions.create({ model: "auto", messages: [{ role: "user", content: "hi" }] });
-```
-
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H "Authorization: Bearer $OPENROUTER_API_KEY" \
@@ -113,6 +107,29 @@ export OPENAI_API_KEY=$OPENROUTER_API_KEY
 ```
 
 The proxy forwards your key straight to OpenRouter (it stores nothing and never logs your key). Add `"stream": true` for token streaming. The response header `X-Proxy-Model` tells you which model actually answered (`X-Proxy-Fallback: true` if it wasn't the first pick).
+
+### Example: chat UI ([Open WebUI](https://github.com/open-webui/open-webui))
+
+A self-hosted ChatGPT-style interface. Pick `auto` from the model menu so it always falls back:
+
+```bash
+docker run -d --network=host -v open-webui:/app/backend/data \
+  -e OPENAI_API_BASE_URL=http://127.0.0.1:8787/v1 -e OPENAI_API_KEY=$OPENROUTER_API_KEY \
+  --name open-webui ghcr.io/open-webui/open-webui:main      # then open http://localhost:8080
+```
+
+`--network=host` lets the container reach the proxy on localhost (Linux).
+
+### Example: coding assistant ([Aider](https://aider.chat))
+
+Pair-program in your terminal on free models:
+
+```bash
+aider --model openai/auto --openai-api-base http://127.0.0.1:8787/v1 \
+      --openai-api-key $OPENROUTER_API_KEY --no-show-model-warnings
+```
+
+`--no-show-model-warnings` hides Aider's notice that it doesn't know `auto`'s context size.
 
 ### Privacy tiers
 
@@ -162,7 +179,7 @@ Unknown flags are a 400. Headers work too: `X-Proxy-Privacy: <mode>`, `X-Proxy-R
 |---|---|---|
 | POST | `/v1/chat/completions` | the proxy (needs your key) |
 | GET  | `/models` | ranked free models with tier / uptime / tools / reason |
-| GET  | `/v1/models` | same list, OpenAI `{data:[{id}]}` shape |
+| GET  | `/v1/models` | `auto`, your aliases, then the selectable models, OpenAI `{data:[{id}]}` shape |
 | GET  | `/status` | cache age + current top pick |
 
 ```bash

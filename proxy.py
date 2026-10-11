@@ -323,7 +323,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_error(503, f"could not fetch models: {e}")
                 return
             if path == "/v1/models":
-                data = [{"id": r["id"], "object": "model"} for r in rows if r["selectable"]]
+                # auto + aliases first, so apps that make you pick from this list can pick them.
+                ids = ["auto", *CONFIG.get("aliases", {}), *(r["id"] for r in rows if r["selectable"])]
+                data = [{"id": i, "object": "model"} for i in ids]
                 self._send_json(200, {"object": "list", "data": data})
             else:
                 self._send_json(200, {"object": "list", "mode": mode.name, "models": rows})

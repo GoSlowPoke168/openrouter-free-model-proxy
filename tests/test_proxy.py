@@ -104,6 +104,9 @@ class FakeRanker:
     def pick(self, mode, require_tools=False, force=False):
         return list(self.ids)
 
+    def list_all(self, mode, require_tools=False, force=False):
+        return [{"id": i, "selectable": True} for i in self.ids]
+
 
 @pytest.fixture
 def upstream(monkeypatch, config):
@@ -236,3 +239,9 @@ def test_rejected_request_body_does_not_poison_keepalive(upstream):
     assert first.status == 401
     conn.request("POST", "/v1/chat/completions", body, {"Authorization": "k"})
     assert conn.getresponse().status == 200
+
+
+def test_v1_models_offers_auto_and_aliases_first(upstream):
+    _, _, base = upstream
+    ids = [m["id"] for m in requests.get(f"{base}/v1/models", timeout=10).json()["data"]]
+    assert ids[:3] == ["auto", "smart", "fast"] and ids[3:] == ["m/one", "m/two", "m/three"]
