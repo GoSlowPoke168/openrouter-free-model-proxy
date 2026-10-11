@@ -1,23 +1,53 @@
 """Pure selection logic — no I/O, unit-testable.
 
-Pipeline: hard filters (tool support when require_tools, expiry buffer) → rank (collection
-order, falling back to API metadata) → privacy classification in rank order
-(via an injected lookup, so callers control caching/rate limits) → choose
-all "private" models first, topping up from "logs" only when fewer than
-*want* private ones exist. "trains" and "unknown" are never selectable.
+Pipeline: hard filter (expiry buffer) → rank (collection order, falling back
+to API metadata) → availability + privacy classification in rank order (via
+injected lookups, so callers control caching/rate limits).
+
+`classify_models` runs once per rebuild. `order_for_mode` then turns that one
+classified list into a cascade for any `Mode` / tool requirement without
+touching the network, so a request never waits on a per-policy rebuild.
+
+A mode carries two independent rules — which tiers may be selected, and
+whether tier order outranks popularity — so the four are a table, not a
+scale. "unknown" is selectable in none of them: it means the privacy scrape
+failed, not that a model is a particular kind.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
-from openrouter import TIER_LOGS, TIER_PRIVATE, Availability, Privacy
+from openrouter import TIER_LOGS, TIER_PRIVATE, TIER_TRAINS, TIER_UNKNOWN, Availability, Privacy
 
 EXPIRY_BUFFER_DAYS = 1  # skip a model once it's within 1 day of expiring
-DEFAULT_WANT = 3
-MAX_PRIVACY_LOOKUPS = 12
+# Safety valve, not a tuning knob: bounds one rebuild's work if OpenRouter
+# ever ships hundreds of free models.
+MAX_CLASSIFICATIONS = 40
+
+
+@dataclass(frozen=True)
+class Mode:
+    name: str
+    tiers: tuple[str, ...]  # selectable, best-privacy first
+    tier_dominant: bool     # True: every tier beats the next. False: rank decides.
+    summary: str
+
+
+# Ordered strictest → loosest; a locked mode can only be tightened along this order.
+MODES = {
+    m.name: m
+    for m in (
+        Mode("strict", (TIER_PRIVATE,), True, "private only"),
+        Mode("balanced", (TIER_PRIVATE, TIER_LOGS), True, "private first, logs as fallback"),
+        Mode("relaxed", (TIER_PRIVATE, TIER_LOGS), False, "private + logs, best rank wins"),
+        Mode("loose", (TIER_PRIVATE, TIER_LOGS, TIER_TRAINS), False,
+             "adds models that train on prompts, best rank wins"),
+    )
+}
+DEFAULT_MODE = "balanced"
 
 
 @dataclass
@@ -29,11 +59,12 @@ class Candidate:
     created: int = 0
     expiration_date: str | None = None
     supports_tools: bool = False
-    rank: int | None = None      # 1-based, after ranking
+    rank: int | None = None      # 1-based among non-expired models
     tier: str | None = None      # privacy tier once classified
     endpoint_provider: str | None = None
     uptime_1d: float | None = None   # best free-endpoint uptime %, once checked
-    reason: str = ""             # human-readable selection/skip reason
+    available: bool | None = None    # availability verdict; None = not checked
+    reason: str = ""             # set only when the model is out regardless of mode
 
     @classmethod
     def from_api(cls, m: dict[str, Any]) -> "Candidate":
@@ -47,17 +78,6 @@ class Candidate:
             expiration_date=m.get("expiration_date") or None,
             supports_tools="tools" in (m.get("supported_parameters") or []),
         )
-
-
-@dataclass
-class SelectionResult:
-    selected: list[Candidate] = field(default_factory=list)
-    candidates: list[Candidate] = field(default_factory=list)  # all, with reasons
-    used_fallback_ranking: bool = False
-
-    @property
-    def ok(self) -> bool:
-        return bool(self.selected)
 
 
 def _parse_date(value: str) -> _dt.date | None:
@@ -85,8 +105,8 @@ def is_expired(
 
 def rank_candidates(
     candidates: list[Candidate], collection_order: list[str] | None
-) -> tuple[list[Candidate], bool]:
-    """Order candidates best-first; returns (ranked, used_fallback_ranking)."""
+) -> list[Candidate]:
+    """Order candidates best-first and stamp 1-based ranks."""
     order_index = {slug: i for i, slug in enumerate(collection_order or [])}
     # Models missing from the collection page sort after listed ones, newest
     # first, largest context as the tiebreak.
@@ -100,87 +120,89 @@ def rank_candidates(
     )
     for i, c in enumerate(ranked):
         c.rank = i + 1
-    return ranked, not order_index
+    return ranked
 
 
-def select_models(
+def classify_models(
     api_models: list[dict[str, Any]],
     collection_order: list[str] | None,
     privacy_of: Callable[[str], Privacy],
     availability_of: Callable[[str], Availability],
     *,
     today: _dt.date,
-    want: int = DEFAULT_WANT,
-    require_tools: bool = True,
     expiry_buffer_days: int = EXPIRY_BUFFER_DAYS,
-    max_privacy_lookups: int = MAX_PRIVACY_LOOKUPS,
-) -> SelectionResult:
-    candidates = [Candidate.from_api(m) for m in api_models]
+    max_classifications: int = MAX_CLASSIFICATIONS,
+) -> list[Candidate]:
+    """Every free model, ranked ones first in rank order, classified."""
+    candidates: list[Candidate] = []
+    for m in api_models:
+        try:
+            candidates.append(Candidate.from_api(m))
+        except (TypeError, ValueError, AttributeError):
+            continue  # one malformed API entry must not abort the rebuild
 
     eligible: list[Candidate] = []
     for c in candidates:
-        if require_tools and not c.supports_tools:
-            c.reason = "skipped: free endpoint does not support tool calling"
-        elif is_expired(c.expiration_date, today, expiry_buffer_days):
-            if expiry_buffer_days > 0:
-                c.reason = f"skipped: expires {c.expiration_date} (within {expiry_buffer_days}d buffer)"
-            else:
-                c.reason = f"skipped: expired {c.expiration_date}"
+        if is_expired(c.expiration_date, today, expiry_buffer_days):
+            c.reason = f"skipped: expires {c.expiration_date} (within {expiry_buffer_days}d buffer)"
         else:
             eligible.append(c)
 
-    ranked, used_fallback = rank_candidates(eligible, collection_order)
-    # Unranked (filtered-out) candidates keep rank=None; rank the full list
-    # for display purposes only after eligibility so ranks reflect choices.
-
-    private_pool: list[Candidate] = []
-    logs_pool: list[Candidate] = []
-    lookups = 0
-    for c in ranked:
-        if len(private_pool) >= want:
-            c.reason = c.reason or "not needed: enough higher-ranked private models"
-            continue
-        if lookups >= max_privacy_lookups:
+    ranked = rank_candidates(eligible, collection_order)
+    for i, c in enumerate(ranked):
+        if i >= max_classifications:
             c.reason = "skipped: lookup budget exhausted"
             continue
-        lookups += 1
 
         # Availability first — a cheap JSON call that skips down endpoints
         # before we spend a page scrape on privacy.
         availability = availability_of(c.id)
         c.uptime_1d = availability.best_uptime_1d
+        c.available = availability.ok
+        c.endpoint_provider = availability.endpoint_provider
         if not availability.ok:
-            c.tier = None
-            c.endpoint_provider = availability.endpoint_provider
             c.reason = f"skipped: {availability.reason}"
             continue
 
         privacy = privacy_of(c.base_slug)
         c.tier = privacy.tier
         c.endpoint_provider = privacy.endpoint_provider or availability.endpoint_provider
-        if privacy.tier == TIER_PRIVATE:
-            private_pool.append(c)
-        elif privacy.tier == TIER_LOGS:
-            logs_pool.append(c)
-            c.reason = "held: retains prompts (logs tier) — used only if <%d private" % want
-        else:
-            c.reason = f"skipped: privacy tier '{privacy.tier}'"
 
-    # Tier dominates popularity: every private pick outranks any logs pick,
-    # so a retains-prompts model can never become the default while a private
-    # one exists. Within a tier, collection rank order is preserved.
-    selected = private_pool[:want]
-    for c in logs_pool:
-        if len(selected) >= want:
-            break
-        selected.append(c)
+    return ranked + [c for c in candidates if c.rank is None]
 
-    for i, c in enumerate(selected):
-        role = "default" if i == 0 else f"fallback #{i}"
-        c.reason = f"selected: {role} ({c.tier} tier)"
 
-    return SelectionResult(
-        selected=selected,
-        candidates=candidates,
-        used_fallback_ranking=used_fallback,
+def is_selectable(c: Candidate, mode: Mode, require_tools: bool = False) -> bool:
+    return (
+        not c.reason
+        and c.available is True
+        and c.tier in mode.tiers
+        and (c.supports_tools or not require_tools)
     )
+
+
+def order_for_mode(
+    candidates: list[Candidate], mode: Mode, require_tools: bool = False
+) -> list[Candidate]:
+    """The selectable candidates, best first, as *mode* orders them."""
+    picks = [c for c in candidates if is_selectable(c, mode, require_tools)]
+    if mode.tier_dominant:
+        # Tier beats popularity: a retains-prompts model can never outrank a
+        # private one. Rank order is preserved within each tier.
+        return sorted(picks, key=lambda c: (mode.tiers.index(c.tier), c.rank))
+    return sorted(picks, key=lambda c: c.rank)
+
+
+def describe(c: Candidate, mode: Mode, require_tools: bool = False) -> str:
+    """Human-readable reason a model is or isn't in *mode*'s cascade."""
+    if c.reason:
+        return c.reason
+    if require_tools and not c.supports_tools:
+        return "skipped: free endpoint does not support tool calling"
+    if c.tier in (None, TIER_UNKNOWN):
+        return "skipped: privacy tier could not be determined"
+    if c.tier not in mode.tiers:
+        return f"skipped: {c.tier} tier — not selectable in {mode.name} mode"
+    if mode.tier_dominant and c.tier != mode.tiers[0]:
+        better = " or ".join(mode.tiers[: mode.tiers.index(c.tier)])
+        return f"held: {c.tier} tier — used after every {better} model"
+    return f"selectable: {c.tier} tier"
