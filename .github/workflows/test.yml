@@ -10,8 +10,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt -r requirements-dev.txt
@@ -20,7 +20,7 @@ jobs:
   install-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install.sh (no service)
         env:
           REPO: ${{ github.workspace }}
@@ -31,7 +31,7 @@ jobs:
   install-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install.ps1 (with scheduled task)
         # Windows PowerShell 5.1: what `irm | iex` runs under on a stock machine.
         shell: powershell
