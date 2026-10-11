@@ -14,7 +14,7 @@ It's a small local proxy that is compatible with any LLM SDK like the OpenAI Pyt
 1. Fetches OpenRouter's live `:free` catalogue and its real-world usage ranking.
 2. Filters out models that are expiring soon, have poor uptime, or fall outside your privacy [mode](#modes).
 3. Caches the ranked result — built at startup, then rebuilt automatically once a day at 00:01 UTC, shortly after OpenRouter's free-tier quota resets (in the background, so requests never block on it). Models are dropped once they're within 1 day of expiring.
-4. On each request, tries the top-ranked model; if it's rate-limited, down or times out, retries the next-best instantly — no manual intervention, no restart. Errors no other model could fix (bad key, no credits, invalid request) come straight back to you (see [errors](#errors)).
+4. On each request, tries the top-ranked model; if it's rate-limited, down or times out, retries the next-best instantly — no manual intervention, no restart. Errors no other model could fix (bad key, no credits) come straight back to you (see [errors](#errors)).
 
 ## Install
 
@@ -100,8 +100,8 @@ Unknown flags are a 400. Headers work too: `X-Proxy-Privacy: <mode>`, `X-Proxy-R
 
 ### Errors
 
-- **Rate limit, outage, timeout, missing model** → tries the next model. If all fail: `429` if every one was rate-limited, else `502`.
-- **Bad key, no credits, invalid request** (400/401/402/403) → OpenRouter's error is returned as-is; no other model would help.
+- **Bad key, no credits, moderation** (401/402/403) → OpenRouter's error is returned immediately; no other model would help.
+- **Anything else** (rate limit, outage, timeout, invalid/removed model) → tries the next model. If every model fails the same way, you get OpenRouter's own error; otherwise a `502`.
 - **Streaming** can fall back until the first token is sent, not after.
 
 ### Endpoints (no key needed except the completion)

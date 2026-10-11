@@ -228,9 +228,10 @@ def build_cascade(policy: dict) -> list[str]:
 
 
 def is_retryable(status: int) -> bool:
-    """Failures another model might not have: rate limits, outages, timeouts,
-    a removed model. Bad key / no credits / bad request (4xx) fail everywhere."""
-    return status in (404, 408, 429) or status >= 500
+    """Failures another model might not have. Bad key / no credits /
+    moderation (401/402/403) fail everywhere; 400 can be model-specific
+    (OpenRouter returns it for a removed model or an over-long prompt)."""
+    return status not in (401, 402, 403)
 
 
 def _first_data_line(buf: bytes) -> bytes | None:
@@ -368,6 +369,7 @@ class Handler(BaseHTTPRequestHandler):
         started = time.monotonic()
         errors: dict[str, str] = {}
         statuses: list[int | None] = []
+        self._last_upstream = None
         fwd_headers = {"Authorization": auth, "Content-Type": "application/json"}
         for idx, model_name in enumerate(cascade):
             payload = {**body, "model": model_name}
@@ -382,9 +384,13 @@ class Handler(BaseHTTPRequestHandler):
             statuses.append(status)
 
         log.warning("all %d candidate model(s) failed: %s", len(cascade), errors)
-        # All rate-limited → 429 so clients back off; any other mix is a gateway failure.
-        final = 429 if statuses and all(s == 429 for s in statuses) else 502
-        self._send_error(final, "all candidate models failed", details=errors)
+        last = self._last_upstream
+        # Every model failed the same way (all 429, or a request no model accepts):
+        # relay OpenRouter's own error so the client sees the real reason.
+        if last and all(st == last[0] for st in statuses):
+            self._send_raw(*last)
+            return
+        self._send_error(502, "all candidate models failed", details=errors)
 
     def _complete_one(self, model_name, payload, headers, is_fallback, errors):
         """Returns (done, status). done=True means a response was sent."""
@@ -410,6 +416,9 @@ class Handler(BaseHTTPRequestHandler):
     def _upstream_failure(self, model_name, resp, errors):
         errors[model_name] = f"HTTP {resp.status_code}: {resp.text[:200]}"
         if is_retryable(resp.status_code):
+            self._last_upstream = (
+                resp.status_code, resp.content, resp.headers.get("Content-Type", "application/json"),
+            )
             return False, resp.status_code
         # Another model can't fix this one — hand the client OpenRouter's own error.
         self._send_raw(

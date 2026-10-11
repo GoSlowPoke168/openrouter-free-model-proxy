@@ -161,7 +161,7 @@ def test_cascades_past_rate_limits(upstream):
     assert calls == ["m/one", "m/two"]
 
 
-@pytest.mark.parametrize("status", [400, 401, 402, 403])
+@pytest.mark.parametrize("status", [401, 402, 403])
 def test_unfixable_errors_are_relayed_without_cascading(upstream, status):
     script, calls, base = upstream
     script["m/one"] = (status, {"error": {"message": "nope", "code": status}})
@@ -178,12 +178,22 @@ def test_200_with_error_body_cascades(upstream):
     assert r.status_code == 200 and r.headers["X-Proxy-Model"] == "m/three"
 
 
-def test_all_rate_limited_returns_429(upstream):
+def test_invalid_model_400_cascades(upstream):
+    # OpenRouter answers 400 (not 404) for a model ID that no longer exists.
+    script, calls, base = upstream
+    script.update({"m/one": (400, {"error": {"message": "m/one is not a valid model ID"}}),
+                   "m/two": (200, OK)})
+    r = _chat(base)
+    assert r.status_code == 200 and calls == ["m/one", "m/two"]
+
+
+@pytest.mark.parametrize("status", [400, 429])
+def test_uniform_failure_relays_openrouters_error(upstream, status):
     script, _, base = upstream
     for m in ("m/one", "m/two", "m/three"):
-        script[m] = (429, {"error": "rl"})
+        script[m] = (status, {"error": {"message": f"real reason {m}", "code": status}})
     r = _chat(base)
-    assert r.status_code == 429 and set(r.json()["error"]["details"]) == {"m/one", "m/two", "m/three"}
+    assert r.status_code == status and r.json()["error"]["message"] == "real reason m/three"
 
 
 def test_mixed_failures_return_502(upstream):
