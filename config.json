@@ -7,8 +7,7 @@
   "request_timeout": 120,
   "defaults": {
     "require_tools": false,
-    "require_private": false,
-    "allow_trains": false
+    "mode": "balanced"
   },
   "locked": [],
   "denylist": {
@@ -16,7 +15,7 @@
     "providers": []
   },
   "aliases": {
-    "smart": "auto:private",
+    "smart": "auto:strict",
     "fast": "auto"
   },
   "last_resort_model": null

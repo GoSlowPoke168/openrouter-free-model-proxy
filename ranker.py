@@ -1,26 +1,24 @@
 """ranker.py — build and cache the ranked list of usable free models.
 
-Wraps the copied openrouter.py fetchers + selection.py logic into a single
-cached "what are the best free models right now" service the proxy can query
-per request without re-scraping OpenRouter every time.
+Wraps the openrouter.py fetchers + selection.py logic into a single cached
+"what are the best free models right now" service the proxy can query per
+request without re-scraping OpenRouter every time.
 
 Caching model:
-- A background thread force-rebuilds the selection once a day at a fixed
-  UTC time (default 00:01, shortly after OpenRouter's free-tier quota resets
-  at 00:00 UTC), so it's freshly scraped daily regardless of when the
-  process started — not "24h after whoever started it", which would drift.
-- ``ttl_seconds`` is a separate, on-demand safety net used only by requests:
-  if the cache is missing or older than ``ttl_seconds`` when a request comes
-  in (e.g. right after startup, before the first scheduled run), it rebuilds
-  synchronously rather than serving nothing.
-- Privacy scrapes (the expensive per-model page fetch) are cached for 24h on
-  disk, mirroring the sibling rotator, so a rebuild is usually a couple of
-  cheap API calls.
+- One classified list per rebuild serves every request policy (mode, tools);
+  per-policy ordering is pure and happens at pick time.
+- A background thread builds once at startup, then force-rebuilds daily at a
+  fixed UTC time (default 00:01, shortly after OpenRouter's free-tier quota
+  resets at 00:00 UTC), so it's freshly scraped daily with no drift.
+- ``ttl_seconds`` is an on-demand safety net: a request that finds the cache
+  missing or older than that rebuilds synchronously rather than serving
+  nothing. Only one rebuild runs at a time; concurrent callers wait for it.
+- Privacy scrapes (the expensive per-model page fetch) are cached on disk.
 - A rebuild that fails (network blip, parse error) keeps serving the last
-  good selection — the selection is never wiped by a transient error.
+  good list — it is never wiped by a transient error.
 
 Everything lives under ~/.cache/openrouter-free-model-proxy/ (honouring
-XDG_CACHE_HOME); nothing here depends on Hermes.
+XDG_CACHE_HOME).
 """
 
 from __future__ import annotations
@@ -29,15 +27,25 @@ import datetime as _dt
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 import openrouter
 import selection
 
-PRIVACY_TTL_HOURS = 24
+# Under 24h so each daily rebuild re-scrapes instead of reusing yesterday's entry.
+PRIVACY_TTL_HOURS = 20
 DEFAULT_REFRESH_HOUR = 0
 DEFAULT_REFRESH_MINUTE = 1
+
+
+def _now() -> _dt.datetime:
+    return _dt.datetime.now(_dt.timezone.utc)
+
+
+def _now_iso() -> str:
+    return _now().isoformat(timespec="seconds")
 
 
 def _next_daily_run(hour: int, minute: int) -> _dt.datetime:
@@ -46,7 +54,7 @@ def _next_daily_run(hour: int, minute: int) -> _dt.datetime:
     UTC rather than local time so this stays pinned to OpenRouter's daily
     quota reset (00:00 UTC) year-round, with no DST drift.
     """
-    now = _dt.datetime.now(_dt.timezone.utc)
+    now = _now()
     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if target <= now:
         target += _dt.timedelta(days=1)
@@ -60,30 +68,19 @@ def cache_dir() -> Path:
     return d
 
 
-def _now() -> _dt.datetime:
-    return _dt.datetime.now(_dt.timezone.utc)
-
-
-def _now_iso() -> str:
-    return _now().isoformat(timespec="seconds")
-
-
 class Ranker:
     """Thread-safe, TTL-cached provider of the ranked free-model list.
 
-    One ``Ranker`` instance is shared by all request threads. Selections are
-    keyed by ``(require_tools, allow_trains)`` (each changes eligibility), so
-    the proxy can ask for a tools-capable list, a trains-tier-included list,
-    or any combination independently, each with its own TTL.
+    One instance is shared by all request threads.
     """
 
     def __init__(self, ttl_seconds: int = 3600, denylist: dict[str, list[str]] | None = None, logger=None):
         self.ttl = ttl_seconds
         self.denylist = denylist or {"models": [], "providers": []}
         self.log = logger
-        self._lock = threading.Lock()
-        # keyed by (require_tools, allow_trains) -> {"built": datetime, "rows": [...]}
-        self._selections: dict[tuple[bool, bool], dict[str, Any]] = {}
+        self._build_lock = threading.Lock()
+        # {"built": datetime, "candidates": [...]}; replaced wholesale, never mutated.
+        self._snapshot: dict[str, Any] | None = None
         self._privacy_cache = self._load_privacy_cache()
 
     # -- privacy cache (persisted) -----------------------------------------
@@ -107,7 +104,7 @@ class Ranker:
             return None
         try:
             checked = _dt.datetime.fromisoformat(entry["checked"])
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, TypeError):
             return None
         if _now() - checked > _dt.timedelta(hours=PRIVACY_TTL_HOURS):
             return None
@@ -123,7 +120,7 @@ class Ranker:
         return privacy
 
     # -- denylist ----------------------------------------------------------
-    def _denied(self, candidate) -> str | None:
+    def _denied(self, candidate: selection.Candidate) -> str | None:
         models = {m.lower() for m in self.denylist.get("models", [])}
         providers = {p.lower() for p in self.denylist.get("providers", [])}
         if candidate.id.lower() in models or candidate.base_slug.lower() in models:
@@ -134,30 +131,67 @@ class Ranker:
         return None
 
     # -- build -------------------------------------------------------------
-    def _build(self, require_tools: bool, allow_trains: bool = False) -> list[dict[str, Any]]:
-        api_models = openrouter.fetch_free_models()
-        collection_order = openrouter.fetch_collection_order()
-        result = selection.select_models(
-            api_models,
-            collection_order,
+    def _build(self) -> list[selection.Candidate]:
+        candidates = selection.classify_models(
+            openrouter.fetch_free_models(),
+            openrouter.fetch_collection_order(),
             self._privacy_lookup,
             openrouter.fetch_availability,
-            today=_dt.date.today(),
-            want=32,                 # want the whole qualifying list, not a top-N
-            require_tools=require_tools,
+            today=_now().date(),
         )
-        self._save_privacy_cache()
+        try:
+            self._save_privacy_cache()
+        except OSError as e:
+            if self.log:
+                self.log.warning("could not save privacy cache: %s", e)
+        return candidates
 
-        rows: list[dict[str, Any]] = []
-        for c in result.candidates:
+    def _fresh(self, snap: dict[str, Any] | None) -> bool:
+        return bool(snap) and (_now() - snap["built"]).total_seconds() < self.ttl
+
+    def _candidates(self, force: bool = False) -> list[selection.Candidate]:
+        snap = self._snapshot
+        if not force and self._fresh(snap):
+            return snap["candidates"]
+
+        requested = _now()
+        with self._build_lock:
+            snap = self._snapshot
+            # Another thread may have finished a rebuild while we waited.
+            if self._fresh(snap) and (not force or snap["built"] >= requested):
+                return snap["candidates"]
+            try:
+                candidates = self._build()
+            except Exception as e:  # keep serving last good list
+                if self.log:
+                    self.log.warning("ranker rebuild failed: %s", e)
+                if snap:
+                    return snap["candidates"]
+                raise
+            self._snapshot = {"built": _now(), "candidates": candidates}
+            return candidates
+
+    # -- public API --------------------------------------------------------
+    def _ordered(
+        self, candidates: list[selection.Candidate], mode: selection.Mode, require_tools: bool
+    ) -> list[selection.Candidate]:
+        allowed = [c for c in candidates if self._denied(c) is None]
+        return selection.order_for_mode(allowed, mode, require_tools)
+
+    def pick(self, mode: selection.Mode, require_tools: bool = False, force: bool = False) -> list[str]:
+        """Ranked model ids for the cascade (best first), honouring filters."""
+        return [c.id for c in self._ordered(self._candidates(force), mode, require_tools)]
+
+    def list_all(
+        self, mode: selection.Mode, require_tools: bool = False, force: bool = False
+    ) -> list[dict[str, Any]]:
+        """Full list for /models: the cascade in order, then everything else by rank."""
+        candidates = self._candidates(force)
+        ordered = self._ordered(candidates, mode, require_tools)
+        chosen = {id(c) for c in ordered}
+        rows = []
+        for c in ordered + [c for c in candidates if id(c) not in chosen]:
             denied = self._denied(c)
-            selectable = bool(
-                c.tier in (openrouter.TIER_PRIVATE, openrouter.TIER_LOGS)
-                or (allow_trains and c.tier == openrouter.TIER_TRAINS)
-            ) and denied is None
-            reason = denied or c.reason
-            if selectable and c.tier == openrouter.TIER_TRAINS:
-                reason = "selected: trains tier (allowed via auto:any)"
             rows.append(
                 {
                     "id": c.id,
@@ -167,114 +201,43 @@ class Ranker:
                     "uptime_1d": c.uptime_1d,
                     "expires": c.expiration_date,
                     "endpoint_provider": c.endpoint_provider,
-                    "reason": reason,
-                    "selectable": selectable,
+                    "reason": denied or selection.describe(c, mode, require_tools),
+                    "selectable": id(c) in chosen,
                     "denied": denied is not None,
                 }
             )
-        # Best-first: ranked selectable rows lead, in rank order.
-        rows.sort(key=lambda r: (not r["selectable"], r["rank"] is None, r["rank"] or 1e9))
         return rows
 
-    def _get_rows(
-        self, require_tools: bool, allow_trains: bool = False, force: bool = False
-    ) -> list[dict[str, Any]]:
-        key = (require_tools, allow_trains)
-        with self._lock:
-            entry = self._selections.get(key)
-            fresh = (
-                entry
-                and not force
-                and (_now() - entry["built"]).total_seconds() < self.ttl
+    def status(self, mode: selection.Mode) -> dict[str, Any]:
+        """Cache health. Never triggers a rebuild, so it can't block."""
+        snap = self._snapshot
+        info: dict[str, Any] = {"ttl_seconds": self.ttl, "mode": mode.name, "built": None,
+                                "age_seconds": None, "count": 0, "top_auto_pick": None}
+        if snap:
+            ordered = self._ordered(snap["candidates"], mode, False)
+            info.update(
+                built=snap["built"].isoformat(timespec="seconds"),
+                age_seconds=int((_now() - snap["built"]).total_seconds()),
+                count=len(snap["candidates"]),
+                top_auto_pick=ordered[0].id if ordered else None,
             )
-            if fresh:
-                return entry["rows"]
-
-        # Rebuild outside the lock (network I/O); tolerate failure.
-        try:
-            rows = self._build(require_tools, allow_trains)
-        except Exception as e:  # keep serving last good selection
-            if self.log:
-                self.log.warning(
-                    "ranker rebuild failed (require_tools=%s, allow_trains=%s): %s",
-                    require_tools, allow_trains, e,
-                )
-            with self._lock:
-                entry = self._selections.get(key)
-            if entry:
-                return entry["rows"]
-            raise
-
-        with self._lock:
-            self._selections[key] = {"built": _now(), "rows": rows}
-        return rows
-
-    # -- public API --------------------------------------------------------
-    def pick(
-        self,
-        require_tools: bool,
-        require_private: bool,
-        allow_trains: bool = False,
-        force: bool = False,
-    ) -> list[str]:
-        """Ranked model ids for the cascade (best first), honouring filters."""
-        rows = self._get_rows(require_tools, allow_trains, force=force)
-        out = []
-        for r in rows:
-            if not r["selectable"]:
-                continue
-            if require_private and r["tier"] != openrouter.TIER_PRIVATE:
-                continue
-            out.append(r["id"])
-        return out
-
-    def list_all(
-        self, require_tools: bool = False, allow_trains: bool = False, force: bool = False
-    ) -> list[dict[str, Any]]:
-        """Full ranked list (including skipped models + reasons) for /models."""
-        return self._get_rows(require_tools, allow_trains, force=force)
-
-    def status(self) -> dict[str, Any]:
-        with self._lock:
-            info = {
-                f"require_tools={k[0]},allow_trains={k[1]}": {
-                    "built": v["built"].isoformat(timespec="seconds"),
-                    "age_seconds": int((_now() - v["built"]).total_seconds()),
-                    "count": len(v["rows"]),
-                }
-                for k, v in self._selections.items()
-            }
-        top = None
-        try:
-            picks = self.pick(require_tools=False, require_private=False)
-            top = picks[0] if picks else None
-        except Exception:
-            pass
-        return {"ttl_seconds": self.ttl, "top_auto_pick": top, "selections": info}
+        return info
 
     def start_background_refresh(
         self, hour: int = DEFAULT_REFRESH_HOUR, minute: int = DEFAULT_REFRESH_MINUTE
     ) -> None:
-        """Force a rebuild once a day at hour:minute UTC (default 00:01,
-        shortly after OpenRouter's daily reset), so requests are served from
-        a same-day-fresh cache without ever blocking on a scrape."""
+        """Warm the cache now, then force a rebuild daily at hour:minute UTC,
+        so requests are served from a same-day-fresh cache without blocking."""
 
         def loop():
-            import time
-
+            force = False
             while True:
-                target = _next_daily_run(hour, minute)
-                time.sleep(max(0, (target - _dt.datetime.now(_dt.timezone.utc)).total_seconds()))
-                for rt in (False, True):
-                    for at in (False, True):
-                        try:
-                            self._get_rows(rt, at, force=True)
-                        except Exception as e:
-                            if self.log:
-                                self.log.warning(
-                                    "scheduled rebuild failed (require_tools=%s, allow_trains=%s): %s",
-                                    rt, at, e,
-                                )
+                try:
+                    self._candidates(force=force)
+                except Exception as e:
+                    if self.log:
+                        self.log.warning("scheduled rebuild failed: %s", e)
+                force = True
+                time.sleep(max(0.0, (_next_daily_run(hour, minute) - _now()).total_seconds()))
 
-        t = threading.Thread(target=loop, name="ranker-refresh", daemon=True)
-        t.start()
+        threading.Thread(target=loop, name="ranker-refresh", daemon=True).start()

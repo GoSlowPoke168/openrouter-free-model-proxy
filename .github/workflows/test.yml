@@ -1,0 +1,53 @@
+name: test
+
+on: [push, pull_request]
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: python -m pytest -q tests
+
+  install-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: install.sh (no service)
+        env:
+          REPO: ${{ github.workspace }}
+          DEST: ${{ runner.temp }}/proxy
+          NO_SERVICE: "1"
+        run: bash install.sh
+
+  install-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: install.ps1 (with scheduled task)
+        # Windows PowerShell 5.1: what `irm | iex` runs under on a stock machine.
+        shell: powershell
+        env:
+          REPO: ${{ github.workspace }}
+          DEST: ${{ runner.temp }}\proxy
+        run: .\install.ps1
+      - name: proxy answers on :8787
+        shell: powershell
+        run: |
+          Get-ScheduledTask openrouter-free-model-proxy | Format-List TaskName, State
+          for ($i = 0; $i -lt 30; $i++) {
+            try { Invoke-RestMethod http://127.0.0.1:8787/status | ConvertTo-Json; exit 0 } catch { Start-Sleep 2 }
+          }
+          throw "proxy never answered on :8787"
+      - name: proxy.log
+        if: always()
+        shell: powershell
+        run: Get-Content "$HOME\.cache\openrouter-free-model-proxy\proxy.log" -ErrorAction SilentlyContinue
